@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optimal-solution-core"
+version = "0.1.0"
+authors = [
+    {name="Ivan Bykov", email="vanka.perm@mail.ru"},
+]
+description = "Package for solving optimal control problems"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "sympy",
+    "matplotlib"
+]
+
+[project.urls]
+Homepage = "https://github.com/mrf0n/OptimalSolutionCore"
