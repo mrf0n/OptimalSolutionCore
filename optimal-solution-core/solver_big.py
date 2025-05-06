@@ -4,7 +4,7 @@ from scipy.linalg import expm
 from scipy.integrate import quad, solve_ivp
 from scipy.optimize import linprog
 import sympy as sp
-from typing import Optional, Tuple, Dict, Union
+from typing import Optional, Tuple, Dict, Union, List
 
 
 class OptimalControlSolverNd:
@@ -37,12 +37,12 @@ class OptimalControlSolverNd:
                  b: Optional[np.ndarray] = None,
                  B: Optional[np.ndarray] = None,
                  q: Optional[np.ndarray] = None,
-                 ft_func: Optional[callable] = None):
+                 ft_func: Optional[List[str]] = None):
 
         self.T = T
         self.n = n  # Размерность состояния
         self.m = m  # Размерность управления
-
+        self.ft = None
         # Инициализация параметров по умолчанию
         self.x0 = np.array([5.0, 12.0]) if x0 is None else np.array(x0, dtype=float)
 
@@ -74,9 +74,9 @@ class OptimalControlSolverNd:
                     ft[1] = 1.0
                 return ft
 
-            self.ft_func = default_ft
+            self.ft = default_ft
         else:
-            self.ft_func = ft_func
+            self.ft = self.create_ft_func(ft_func)
 
         # Кэши
         self.pt_cache = {}
@@ -87,6 +87,21 @@ class OptimalControlSolverNd:
         self.U = None  # Теперь будет (m, K+1)
         self.x_traj = None  # (n, K+1)
         self.ob_value = None
+
+    def create_ft_func(self, expressions: List[str]):
+        # Создаем переменную t для использования в выражениях
+        t = sp.symbols('t')
+
+        # Парсим и создаем функции для каждого выражения
+        funcs = [sp.lambdify(t, sp.sympify(expr), 'numpy') for expr in expressions]
+
+        def ft(t_value):
+            ft = np.zeros(self.n)
+            for i in range(min(len(funcs), self.n)):
+                ft[i] = funcs[i](t_value)
+            return ft
+
+        return ft
 
     def _validate_shapes(self):
         """Проверка согласованности размеров матриц"""
@@ -170,7 +185,7 @@ class OptimalControlSolverNd:
 
         def ode_func(t: float, x: np.ndarray) -> np.ndarray:
             u = np.array([self.get_control(t, i) for i in range(self.m)])
-            ft_val = self.ft_func(t)
+            ft_val = self.ft(t)
             dx = self.F @ x + self.G @ u + ft_val
             return dx
 
@@ -240,26 +255,27 @@ class OptimalControlSolverNd:
             'objective': self.ob_value
         }
 
-# # Пример использования
-# if __name__ == "__main__":
-#     # Пример для 3-мерного состояния и 2 управлений
-#     solver = OptimalControlSolverNd(
-#         n=3,
-#         m=2,
-#         x0=[1, 2, 3],
-#         F=np.array([[0.1, -0.02, 0],
-#                     [0, 0.2, 0.01],
-#                     [0.03, 0, 0.15]]),
-#         G=np.array([[0.3, 0.2],
-#                     [0.1, 0.4],
-#                     [0, 0.2]]),
-#         a=np.array([-1, 0, 0.5]),
-#         b=np.array([0, 5]),
-#         B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
-#         q=np.array([0, 0, 5, 20, 0])
-#     )
-#
-#     results = solver.solve(K=100)
-#     print(f"Objective value: {results['objective']}")
-#     solver.plot_controls()
-#     solver.plot_trajectories()
+# Пример использования
+if __name__ == "__main__":
+    # Пример для 3-мерного состояния и 2 управлений
+    solver = OptimalControlSolverNd(
+        n=3,
+        m=2,
+        x0=[1, 2, 3],
+        F=np.array([[0.1, -0.02, 0],
+                    [0, 0.2, 0.01],
+                    [0.03, 0, 0.15]]),
+        G=np.array([[0.3, 0.2],
+                    [0.1, 0.4],
+                    [0, 0.2]]),
+        a=np.array([-1, 0, 0.5]),
+        b=np.array([0, 5]),
+        B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
+        q=np.array([0, 0, 5, 20, 0]),
+        ft_func = ["1", "0", "1 + sin(t)"]
+    )
+
+    results = solver.solve(K=100)
+    print(f"Objective value: {results['objective']}")
+    solver.plot_controls()
+    solver.plot_trajectories()
