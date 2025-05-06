@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optimalsolutioncore"
-version = "0.1.4"
+version = "0.1.5"
 authors = [
     {name="Ivan Bykov", email="vanka.perm@mail.ru"},
 ]
 description = "Package for solving optimal control problems"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
