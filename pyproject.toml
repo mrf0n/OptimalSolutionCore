@@ -3,8 +3,8 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "optimal-solution-core"
-version = "0.1.1"
+name = "optimalsolutioncore"
+version = "0.1.4"
 authors = [
     {name="Ivan Bykov", email="vanka.perm@mail.ru"},
 ]

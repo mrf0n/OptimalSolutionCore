@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.linalg import expm
@@ -229,6 +231,26 @@ class OptimalControlSolverNd:
         plt.grid(True)
         plt.show()
 
+    def plot_controls_to_bytes(self):
+        """Возвращает график как байты (PNG)"""
+        if self.U is None:
+            self.solve_optimal_control()
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.m):
+            plt.plot(self.times, self.U[i, :], label=f'u{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('Control')
+        plt.title('Optimal Controls')
+        plt.legend()
+        plt.grid(True)
+
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        plt.close()
+        buffer.seek(0)
+        return buffer.read()
+
     def plot_trajectories(self):
         """Визуализация траекторий системы"""
         if self.x_traj is None:
@@ -244,6 +266,26 @@ class OptimalControlSolverNd:
         plt.grid(True)
         plt.show()
 
+    def plot_trajectories_to_bytes(self):
+        """Визуализация траекторий системы"""
+        if self.x_traj is None:
+            self.compute_trajectory()
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.n):
+            plt.plot(self.times, self.x_traj[i, :], label=f'x{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('State')
+        plt.title('System Trajectories')
+        plt.legend()
+        plt.grid(True)
+
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        plt.close()
+        buffer.seek(0)
+        return buffer.read()
+
     def solve(self, K: int = 50) -> Dict[str, Union[np.ndarray, float]]:
         """Полное решение задачи"""
         self.solve_optimal_control(K)
@@ -256,26 +298,26 @@ class OptimalControlSolverNd:
         }
 
 # Пример использования
-if __name__ == "__main__":
-    # Пример для 3-мерного состояния и 2 управлений
-    solver = OptimalControlSolverNd(
-        n=3,
-        m=2,
-        x0=[1, 2, 3],
-        F=np.array([[0.1, -0.02, 0],
-                    [0, 0.2, 0.01],
-                    [0.03, 0, 0.15]]),
-        G=np.array([[0.3, 0.2],
-                    [0.1, 0.4],
-                    [0, 0.2]]),
-        a=np.array([-1, 0, 0.5]),
-        b=np.array([0, 5]),
-        B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
-        q=np.array([0, 0, 5, 20, 0]),
-        ft_func = ["1", "0", "1 + sin(t)"]
-    )
-
-    results = solver.solve(K=100)
-    print(f"Objective value: {results['objective']}")
-    solver.plot_controls()
-    solver.plot_trajectories()
+# if __name__ == "__main__":
+#     # Пример для 3-мерного состояния и 2 управлений
+#     solver = OptimalControlSolverNd(
+#         n=3,
+#         m=2,
+#         x0=[1, 2, 3],
+#         F=np.array([[0.1, -0.02, 0],
+#                     [0, 0.2, 0.01],
+#                     [0.03, 0, 0.15]]),
+#         G=np.array([[0.3, 0.2],
+#                     [0.1, 0.4],
+#                     [0, 0.2]]),
+#         a=np.array([-1, 0, 0.5]),
+#         b=np.array([0, 5]),
+#         B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
+#         q=np.array([0, 0, 5, 20, 0]),
+#         ft_func = ["1", "0", "1 + sin(t)"]
+#     )
+#
+#     results = solver.solve(K=100)
+#     print(f"Objective value: {results['objective']}")
+#     solver.plot_controls()
+#     solver.plot_trajectories()
