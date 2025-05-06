@@ -1,3 +1,4 @@
 from .solver import OptimalControlSolver
+from .solver_big import OptimalControlSolverNd
 
-__all__ = ['OptimalControlSolver']
+__all__ = ['OptimalControlSolver', 'OptimalControlSolverNd']
