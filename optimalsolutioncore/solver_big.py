@@ -20,8 +20,8 @@ class OptimalControlSolverNd:
     n: int - размерность состояния
     m: int - размерность управления
     x0: np.array - начальное состояние (n,)
-    F: np.array - матрица системы (n x n)
-    G: np.array - матрица управления (n x m)
+    F_func: List[List[str]] - матрица системы (n x n)
+    G_func: List[List[str]] - матрица управления (n x m)
     a: np.array - вектор параметров (n,)
     b: np.array - вектор параметров (m,)
     B: np.array - матрица ограничений управления (k x m)
@@ -30,11 +30,13 @@ class OptimalControlSolverNd:
 
     def __init__(self,
                  T: float = 6.0,
+                 M: float = 1.0,
+                 N: float = 5.0,
                  n: int = 2,
                  m: int = 2,
                  x0: Optional[np.ndarray] = None,
-                 F: Optional[np.ndarray] = None,
-                 G: Optional[np.ndarray] = None,
+                 F_func: List[List[str]] = None,
+                 G_func: List[List[str]] = None,
                  a: Optional[np.ndarray] = None,
                  b: Optional[np.ndarray] = None,
                  B: Optional[np.ndarray] = None,
@@ -42,6 +44,8 @@ class OptimalControlSolverNd:
                  ft_func: Optional[List[str]] = None):
 
         self.T = T
+        self.M = M
+        self.N = N
         self.n = n  # Размерность состояния
         self.m = m  # Размерность управления
         self.ft = None
@@ -49,10 +53,10 @@ class OptimalControlSolverNd:
         self.x0 = np.array([5.0, 12.0]) if x0 is None else np.array(x0, dtype=float)
 
         # Матрица системы (n x n)
-        self.F = np.array([[0.5, -0.02], [-0.02, 0.4]], dtype=float) if F is None else np.array(F, dtype=float)
+        self.F = None
 
         # Матрица управления (n x m)
-        self.G = np.array([[0.3, 0.3], [0.2, 0.2]], dtype=float) if G is None else np.array(G, dtype=float)
+        self.G = None
 
         # Вектор параметров (n,)
         self.a = np.array([-1.0, 0.0]) if a is None else np.array(a, dtype=float)
@@ -80,6 +84,33 @@ class OptimalControlSolverNd:
         else:
             self.ft = self.create_ft_func(ft_func)
 
+        # Функция для вычисления G(t) (по умолчанию [t, 0, 0] [t, 0, 0] [t, 0, 0])
+        if G_func is None:
+            def default_gt(t):
+                # Создаём нулевую матрицу n x m
+                gt_matrix = np.zeros((self.n, self.m))
+                for i in range(self.n):
+                    gt_matrix[i, 0] = t
+                return gt_matrix
+
+            self.G = default_gt
+        else:
+            self.G = self.create_Gt_Ft_func(G_func)
+
+        # Функция для вычисления F(t) (по умолчанию [t, 0, 0] [0, t, 0] [0, 0, t])
+        if F_func is None:
+            def default_ft(t):
+                # Создаём нулевую матрицу n x n
+                ft_matrix = np.zeros((self.n, self.n))
+                # Заполняем диагональ
+                for i in range(self.n):
+                    ft_matrix[i, i] = t  # Главная диагональ = t
+                return ft_matrix
+
+            self.F = default_ft
+        else:
+            self.F = self.create_Gt_Ft_func(F_func)
+
         # Кэши
         self.pt_cache = {}
         self.Yt_cache = {}
@@ -105,10 +136,60 @@ class OptimalControlSolverNd:
 
         return ft
 
+    def create_Gt_Ft_func(self, expressions: List[List[str]]):
+        """
+        Создает матричную функцию из списка символьных выражений.
+        Размерность матрицы определяется по входному списку.
+
+        Args:
+            expressions: Список списков строк с математическими выражениями.
+                        Например: [["t", "0"], ["1", "sin(t)"]] создаст матрицу 2x2.
+
+        Returns:
+            Функция gt(t), возвращающая матрицу размерности len(expressions) x len(expressions[0])
+        """
+        t = sp.symbols('t')
+
+        # Проверка корректности входных данных
+        if not expressions or not all(expressions):
+            raise ValueError("Expressions list must contain at least one row with at least one expression")
+
+        # Определяем размерность матрицы
+        rows = len(expressions)
+        cols = len(expressions[0]) if rows > 0 else 0
+
+        # Проверка, что все строки имеют одинаковую длину
+        if not all(len(row) == cols for row in expressions):
+            raise ValueError("All expression rows must have the same number of columns")
+
+        # Создаем матрицу лямбда-функций
+        func_matrix = []
+        for row_exprs in expressions:
+            row_funcs = [sp.lambdify(t, sp.sympify(expr), 'numpy') for expr in row_exprs]
+            func_matrix.append(row_funcs)
+
+        def gt(t_value):
+            # Создаем нулевую матрицу вычисленного размера
+            gt_mat = np.zeros((rows, cols))
+
+            # Заполняем матрицу значениями
+            for i in range(rows):
+                for j in range(cols):
+                    try:
+                        gt_mat[i, j] = func_matrix[i][j](t_value)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        gt_mat[i, j] = 0.0  # Запасной вариант при ошибках вычисления
+                    except Exception as e:
+                        print(f"Warning: Unexpected error computing element ({i},{j}): {str(e)}")
+                        gt_mat[i, j] = 0.0
+            return gt_mat
+
+        return gt
+
     def _validate_shapes(self):
         """Проверка согласованности размеров матриц"""
-        assert self.F.shape == (self.n, self.n), f"F must be ({self.n}, {self.n})"
-        assert self.G.shape == (self.n, self.m), f"G must be ({self.n}, {self.m})"
+        # assert self.F.shape == (self.n, self.n), f"F must be ({self.n}, {self.n})"
+        # assert self.G.shape == (self.n, self.m), f"G must be ({self.n}, {self.m})"
         assert self.x0.shape == (self.n,), f"x0 must be ({self.n},)"
         assert self.a.shape == (self.n,), f"a must be ({self.n},)"
         assert self.b.shape == (self.m,), f"b must be ({self.m},)"
@@ -117,7 +198,7 @@ class OptimalControlSolverNd:
 
     def compute_Yt(self, t: float) -> np.ndarray:
         """Вычисление матричной экспоненты Y(t) = exp(-F^T t)"""
-        return expm(-self.F.T * t)
+        return expm(-self.F(t).T * t)
 
     def compute_A2(self) -> np.ndarray:
         """Вычисление интегральной части A2"""
@@ -151,7 +232,7 @@ class OptimalControlSolverNd:
     def compute_Gp1(self, t: float) -> np.ndarray:
         """Вычисление Gp1(t) = G^T @ pt(t) - b"""
         pt_val = self.compute_pt(t)
-        return self.G.T @ pt_val - self.b.reshape(-1, 1)
+        return self.G(t).T @ pt_val - self.b.reshape(-1, 1)
 
     def solve_optimal_control(self, K: int = 50):
         """Решение задачи оптимального управления"""
@@ -188,7 +269,7 @@ class OptimalControlSolverNd:
         def ode_func(t: float, x: np.ndarray) -> np.ndarray:
             u = np.array([self.get_control(t, i) for i in range(self.m)])
             ft_val = self.ft(t)
-            dx = self.F @ x + self.G @ u + ft_val
+            dx = self.F(t) @ x + self.G(t) @ u + ft_val
             return dx
 
         sol = solve_ivp(ode_func, [0, self.T], self.x0, t_eval=self.times, rtol=1e-6, atol=1e-8)
@@ -298,26 +379,25 @@ class OptimalControlSolverNd:
         }
 
 # Пример использования
-# if __name__ == "__main__":
-#     # Пример для 3-мерного состояния и 2 управлений
-#     solver = OptimalControlSolverNd(
-#         n=3,
-#         m=2,
-#         x0=[1, 2, 3],
-#         F=np.array([[0.1, -0.02, 0],
-#                     [0, 0.2, 0.01],
-#                     [0.03, 0, 0.15]]),
-#         G=np.array([[0.3, 0.2],
-#                     [0.1, 0.4],
-#                     [0, 0.2]]),
-#         a=np.array([-1, 0, 0.5]),
-#         b=np.array([0, 5]),
-#         B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
-#         q=np.array([0, 0, 5, 20, 0]),
-#         ft_func = ["1", "0", "1 + sin(t)"]
-#     )
-#
-#     results = solver.solve(K=100)
-#     print(f"Objective value: {results['objective']}")
-#     solver.plot_controls()
-#     solver.plot_trajectories()
+if __name__ == "__main__":
+    # Пример для 3-мерного состояния и 2 управлений
+    solver = OptimalControlSolverNd(
+        T=6,
+        M=1,
+        N=5,
+        n=2,
+        m=2,
+        x0=[5, 12],
+        F_func=[["0.5", "-0.02"],["-0.02", "0.4"]],
+        G_func=[["0.3", "0.3"],["0.2", "0.2"]],
+        a=np.array([-1, 0]),
+        b=np.array([0, 5]),
+        B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
+        q=np.array([0, 0, 5, 20, 0]),
+        ft_func = ["t", "1"]
+    )
+
+    results = solver.solve(K=50)
+    print(f"Objective value: {results['objective']}")
+    solver.plot_controls()
+    solver.plot_trajectories()
