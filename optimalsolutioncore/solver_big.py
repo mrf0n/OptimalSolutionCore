@@ -378,26 +378,26 @@ class OptimalControlSolverNd:
             'objective': self.ob_value
         }
 
-# # Пример использования
-# if __name__ == "__main__":
-#     # Пример для 3-мерного состояния и 2 управлений
-#     solver = OptimalControlSolverNd(
-#         T=6,
-#         M=1,
-#         N=5,
-#         n=2,
-#         m=2,
-#         x0=[5, 12],
-#         F_func=[["0.5", "-0.02"],["-0.02", "0.4"]],
-#         G_func=[["0.3", "0.3"],["0.2", "0.2"]],
-#         a=np.array([-1, 0]),
-#         b=np.array([0, 5]),
-#         B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
-#         q=np.array([0, 0, 5, 20, 0]),
-#         ft_func = ["t", "1"]
-#     )
-#
-#     results = solver.solve(K=50)
-#     print(f"Objective value: {results['objective']}")
-#     solver.plot_controls()
-#     solver.plot_trajectories()
+# Пример использования
+if __name__ == "__main__":
+    # Пример для 3-мерного состояния и 2 управлений
+    solver = OptimalControlSolverNd(
+        T=6,
+        M=1,
+        N=5,
+        n=2,
+        m=2,
+        x0=[5, 12],
+        F_func=[["0.5", "-0.02"],["-0.02", "0.4"]],
+        G_func=[["0.3", "0.3"],["0.2", "0.2"]],
+        a=np.array([-1, 0]),
+        b=np.array([0, 5]),
+        B=np.array([[-1, 0], [0, -1], [2, 0], [0, 8], [2, -7]]),
+        q=np.array([0, 0, 5, 20, 0]),
+        ft_func = ["t", "1"]
+    )
+
+    results = solver.solve(K=50)
+    print(f"Objective value: {results['objective']}")
+    solver.plot_controls()
+    solver.plot_trajectories()
