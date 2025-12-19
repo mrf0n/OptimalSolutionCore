@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import quad, solve_ivp
 from scipy.optimize import linprog
+from scipy.interpolate import CubicSpline
 import sympy as sp
 
 
@@ -16,10 +17,9 @@ class OptimalControlSolverNd:
         J = ∫_0^T (a^T x(t) + b^T u(t)) dt,
         B u(t) ≤ q.
 
-    В этой версии:
-    - фундаментальная матрица Φ(t) строится численно: Φ'(t)=F(t)Φ(t), Φ(0)=I.
-    - сопряженная переменная p(t) и состояние x(t) вычисляются через Φ(t).
-    - управление u(t_i) ищется по условию максимума в узлах сетки через LP (linprog).
+    Дополнительно:
+    - сплайн-аппроксимация фундаментальной матрицы Φ(t)
+    - вычисление невязки Φ'(t) − F(t)Φ(t)
     """
 
     def __init__(self,
@@ -59,9 +59,9 @@ class OptimalControlSolverNd:
 
         # f(t)
         if ft_func is None:
-            def default_ft(t_val: float) -> np.ndarray:
+            def default_ft(t):
                 ft = np.zeros(self.n)
-                ft[0] = t_val
+                ft[0] = t
                 if self.n > 1:
                     ft[1] = 1.0
                 return ft
@@ -71,390 +71,272 @@ class OptimalControlSolverNd:
 
         # G(t)
         if G_func is None:
-            def default_gt(t_val: float) -> np.ndarray:
-                gt_matrix = np.zeros((self.n, self.m))
+            def default_gt(t):
+                G = np.zeros((self.n, self.m))
                 for i in range(self.n):
-                    gt_matrix[i, 0] = t_val
-                return gt_matrix
+                    G[i, 0] = t
+                return G
             self.G = default_gt
         else:
             self.G = self._create_matrix_func(G_func)
 
         # F(t)
         if F_func is None:
-            def default_Ft(t_val: float) -> np.ndarray:
-                ft_matrix = np.zeros((self.n, self.n))
+            def default_Ft(t):
+                F = np.zeros((self.n, self.n))
                 for i in range(self.n):
-                    ft_matrix[i, i] = t_val
-                return ft_matrix
+                    F[i, i] = t
+                return F
             self.F = default_Ft
         else:
             self.F = self._create_matrix_func(F_func)
 
-        # Результаты
-        self.times: Optional[np.ndarray] = None
-        self.U: Optional[np.ndarray] = None
-        self.x_traj: Optional[np.ndarray] = None
-        self.p_traj: Optional[np.ndarray] = None
-        self.ob_value: Optional[float] = None
+        self.times = None
+        self.U = None
+        self.x_traj = None
+        self.p_traj = None
+        self.ob_value = None
 
-        # Фундаментальная матрица Φ(t_i)
-        self.Phi: Optional[np.ndarray] = None  # shape (K+1, n, n)
+        self.Phi = None
+        self.Phi_spline = None
+        self.Phi_residual = None
 
-    # -------------------------------------------------------------------------
-    # Создание функций F(t), G(t), f(t) из строк
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
 
-    def _create_ft_func(self, expressions: List[str]):
+    def _create_ft_func(self, expressions):
         t = sp.symbols('t')
-        funcs = [sp.lambdify(t, sp.sympify(expr), 'numpy') for expr in expressions]
+        funcs = [sp.lambdify(t, sp.sympify(e), 'numpy') for e in expressions]
 
-        def ft(t_value: float) -> np.ndarray:
-            ft_vec = np.zeros(self.n)
-            for i in range(min(len(funcs), self.n)):
-                ft_vec[i] = funcs[i](t_value)
-            return ft_vec
+        def ft(tv):
+            v = np.zeros(self.n)
+            for i in range(min(self.n, len(funcs))):
+                v[i] = funcs[i](tv)
+            return v
 
         return ft
 
-    def _create_matrix_func(self, expressions: List[List[str]]):
+    def _create_matrix_func(self, expressions):
         t = sp.symbols('t')
+        funcs = [[sp.lambdify(t, sp.sympify(e), 'numpy') for e in row] for row in expressions]
 
-        if not expressions or not all(expressions):
-            raise ValueError("Список expressions должен содержать хотя бы одну строку и один столбец")
+        def mat(tv):
+            A = np.zeros((len(funcs), len(funcs[0])))
+            for i in range(len(funcs)):
+                for j in range(len(funcs[0])):
+                    A[i, j] = funcs[i][j](tv)
+            return A
 
-        rows = len(expressions)
-        cols = len(expressions[0])
+        return mat
 
-        if not all(len(row) == cols for row in expressions):
-            raise ValueError("Все строки в expressions должны иметь одинаковую длину")
+    # ------------------------------------------------------------------
+    # фундаментальная матрица
+    # ------------------------------------------------------------------
 
-        func_matrix = []
-        for row_exprs in expressions:
-            row_funcs = [sp.lambdify(t, sp.sympify(expr), 'numpy') for expr in row_exprs]
-            func_matrix.append(row_funcs)
-
-        def mt(t_value: float) -> np.ndarray:
-            mat = np.zeros((rows, cols))
-            for i in range(rows):
-                for j in range(cols):
-                    try:
-                        mat[i, j] = func_matrix[i][j](t_value)
-                    except Exception:
-                        mat[i, j] = 0.0
-            return mat
-
-        return mt
-
-    # -------------------------------------------------------------------------
-    # Проверка размеров
-    # -------------------------------------------------------------------------
-
-    def _validate_shapes(self):
-        assert self.x0.shape == (self.n,), f"x0 must be of shape ({self.n},)"
-        assert self.a.shape == (self.n,), f"a must be of shape ({self.n},)"
-        assert self.b.shape == (self.m,), f"b must be of shape ({self.m},)"
-        assert self.B.shape[1] == self.m, f"B must have {self.m} columns"
-        assert self.q.shape[0] == self.B.shape[0], "B and q must have same number of rows"
-
-        F0 = self.F(0.0)
-        G0 = self.G(0.0)
-        assert F0.shape == (self.n, self.n), f"F(t) must be ({self.n}, {self.n})"
-        assert G0.shape == (self.n, self.m), f"G(t) must be ({self.n}, {self.m})"
-
-        f0 = self.ft(0.0)
-        assert f0.shape == (self.n,), f"f(t) must be vector of length {self.n}"
-
-    # -------------------------------------------------------------------------
-    # Фундаментальная матрица Φ(t)
-    # -------------------------------------------------------------------------
-
-    def _compute_fundamental(self, K: int):
-        """
-        Строит Φ(t_i) на сетке times:
-            Φ'(t) = F(t) Φ(t),  Φ(0)=I
-        """
+    def _compute_fundamental(self, K):
         self.times = np.linspace(0.0, self.T, K + 1)
         n = self.n
 
-        def ode_phi(t, y_flat):
-            Phi = y_flat.reshape(n, n)
-            dPhi = self.F(t) @ Phi
-            return dPhi.reshape(-1)
+        def ode_phi(t, y):
+            Phi = y.reshape(n, n)
+            return (self.F(t) @ Phi).reshape(-1)
 
         y0 = np.eye(n).reshape(-1)
 
         sol = solve_ivp(
             ode_phi,
             (0.0, self.T),
-            y0=y0,
+            y0,
             t_eval=self.times,
             rtol=1e-8,
             atol=1e-10
         )
+
         if not sol.success:
-            raise RuntimeError("Не удалось построить фундаментальную матрицу Φ(t)")
+            raise RuntimeError("Не удалось построить Φ(t)")
 
         self.Phi = sol.y.T.reshape(K + 1, n, n)
 
-    # -------------------------------------------------------------------------
-    # p(t) через фундаментальную матрицу
-    # -------------------------------------------------------------------------
+        Y = self.Phi.reshape(K + 1, n * n)
+        self.Phi_spline = CubicSpline(self.times, Y, axis=0, bc_type='natural')
 
-    def _solve_costate(self, K: int):
-        """
-        p'(t) = -F(t)^T p(t) + a,  p(T)=0
+    def Phi_at(self, t):
+        return self.Phi_spline(t).reshape(self.n, self.n)
 
-        Решение через Φ(t):
-            p(t) = Φ(t)^{-T} ∫_t^T Φ(s)^T a ds
-        """
-        if self.times is None or self.Phi is None or len(self.times) != K + 1:
-            self._compute_fundamental(K)
+    def dPhi_at(self, t):
+        return self.Phi_spline.derivative()(t).reshape(self.n, self.n)
 
+    # ------------------------------------------------------------------
+    # невязка Φ'(t) − F(t)Φ(t)
+    # ------------------------------------------------------------------
+
+    def compute_phi_residuals(self):
+        ts = self.times
+        norms = np.zeros(ts.size)
+
+        for i, t in enumerate(ts):
+            r = self.dPhi_at(t) - self.F(t) @ self.Phi_at(t)
+            norms[i] = np.linalg.norm(r, ord='fro')
+
+        self.Phi_residual = norms
+        # plt.plot(self.Phi_residual)
+        # plt.show()
+        return self.Phi_residual
+
+    # ------------------------------------------------------------------
+    # сопряжённая система
+    # ------------------------------------------------------------------
+
+    def _solve_costate(self, K):
+        self._compute_fundamental(K)
+
+        Phi = self.Phi
+        t = self.times
         n = self.n
-        t_grid = self.times
-        Phi = self.Phi  # (K+1,n,n)
 
-        # A_i = Φ(t_i)^T a
-        A = np.zeros((K + 1, n))
-        for i in range(K + 1):
-            A[i, :] = (Phi[i].T @ self.a).reshape(-1)
+        A = np.array([Phi[i].T @ self.a for i in range(K + 1)])
 
-        # I_i = ∫_{t_i}^T Φ(s)^T a ds (трапеции, кумулятивно назад)
-        I = np.zeros((K + 1, n))
-        I[K, :] = 0.0
+        I = np.zeros_like(A)
         for i in range(K - 1, -1, -1):
-            dt = t_grid[i + 1] - t_grid[i]
-            I[i, :] = I[i + 1, :] + 0.5 * dt * (A[i + 1, :] + A[i, :])
+            dt = t[i + 1] - t[i]
+            I[i] = I[i + 1] + 0.5 * dt * (A[i] + A[i + 1])
 
-        # p_i = Φ(t_i)^{-T} I_i  => решаем Φ(t_i)^T p = I
         self.p_traj = np.zeros((n, K + 1))
         for i in range(K + 1):
-            self.p_traj[:, i] = np.linalg.solve(Phi[i].T, I[i, :])
+            self.p_traj[:, i] = np.linalg.solve(Phi[i].T, I[i])
 
-    # -------------------------------------------------------------------------
-    # Оптимальное управление (LP в узлах)
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # оптимальное управление
+    # ------------------------------------------------------------------
 
-    def solve_optimal_control(self, K: int = 50):
-        """
-        1) Строим Φ(t_i)
-        2) Считаем p(t_i) через Φ
-        3) В каждом t_i решаем LP:
-              max (G(t_i)^T p(t_i) - b)^T u
-              s.t. Bu <= q
-        """
-        self._validate_shapes()
-        self._compute_fundamental(K)
+    def solve_optimal_control(self, K=50):
         self._solve_costate(K)
-
         self.U = np.zeros((self.m, K + 1))
 
         for i, t in enumerate(self.times):
-            p_t = self.p_traj[:, i].reshape(-1, 1)     # (n,1)
-            Gt = self.G(t)                              # (n,m)
-            c_obj = (Gt.T @ p_t - self.b.reshape(-1, 1)).flatten()  # (m,)
-
-            res = linprog(
-                c_obj,
-                A_ub=self.B,
-                b_ub=self.q,
-                bounds=(None, None)
-            )
-
+            c = (self.G(t).T @ self.p_traj[:, i] - self.b)
+            res = linprog(c, A_ub=self.B, b_ub=self.q, bounds=(None, None))
             self.U[:, i] = res.x if res.success else 0.0
 
-    # -------------------------------------------------------------------------
-    # Интерполяция управления
-    # -------------------------------------------------------------------------
+        self.compute_phi_residuals()
 
-    def get_control(self, t: float, i: int) -> float:
-        if self.times is None or self.U is None:
-            raise RuntimeError("Сначала нужно вызвать solve_optimal_control()")
-        return float(np.interp(t, self.times, self.U[i, :]))
-
-    # -------------------------------------------------------------------------
-    # x(t) через фундаментальную матрицу
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # траектория
+    # ------------------------------------------------------------------
 
     def compute_trajectory(self):
-        """
-        x'(t)=F(t)x+G(t)u+f(t)
-
-        Через Φ(t):
-            x(t)=Φ(t) ( x0 + ∫_0^t Φ(s)^{-1}(G(s)u(s)+f(s)) ds )
-        Интеграл берём на сетке times (трапеции).
-        """
-        if self.times is None or self.U is None:
-            raise RuntimeError("Сначала решите оптимальное управление (solve_optimal_control).")
-
-        if self.Phi is None:
-            K = len(self.times) - 1
-            self._compute_fundamental(K)
-
         n = self.n
-        t_grid = self.times
-        Phi = self.Phi
-        K = len(t_grid) - 1
+        K = len(self.times) - 1
 
-        # r(t_i) = G(t_i)u(t_i) + f(t_i)
         r = np.zeros((K + 1, n))
-        for i in range(K + 1):
-            ti = t_grid[i]
-            ui = self.U[:, i]
-            r[i, :] = (self.G(ti) @ ui + self.ft(ti)).reshape(-1)
+        for i, t in enumerate(self.times):
+            r[i] = self.G(t) @ self.U[:, i] + self.ft(t)
 
-        # z(t_i) = Φ(t_i)^{-1} r(t_i)
-        z = np.zeros((K + 1, n))
-        for i in range(K + 1):
-            z[i, :] = np.linalg.solve(Phi[i], r[i, :])
+        z = np.array([np.linalg.solve(self.Phi[i], r[i]) for i in range(K + 1)])
 
-        # J_i = ∫_0^{t_i} z(s) ds (трапеции)
-        J = np.zeros((K + 1, n))
-        J[0, :] = 0.0
+        J = np.zeros_like(z)
         for i in range(1, K + 1):
-            dt = t_grid[i] - t_grid[i - 1]
-            J[i, :] = J[i - 1, :] + 0.5 * dt * (z[i - 1, :] + z[i, :])
+            dt = self.times[i] - self.times[i - 1]
+            J[i] = J[i - 1] + 0.5 * dt * (z[i - 1] + z[i])
 
-        # x(t_i) = Φ(t_i) (x0 + J_i)
-        self.x_traj = np.zeros((n, K + 1))
-        for i in range(K + 1):
-            self.x_traj[:, i] = (Phi[i] @ (self.x0 + J[i, :])).reshape(-1)
+        self.x_traj = np.array(
+            [self.Phi[i] @ (self.x0 + J[i]) for i in range(K + 1)]
+        ).T
 
-    # -------------------------------------------------------------------------
-    # Функционал качества
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # функционал
+    # ------------------------------------------------------------------
 
-    def compute_objective(self) -> float:
-        if self.x_traj is None or self.times is None:
-            self.compute_trajectory()
+    def compute_objective(self):
+        self.compute_trajectory()
 
-        def integrand_x(t: float) -> float:
-            x_interp = np.array([
-                np.interp(t, self.times, self.x_traj[i, :])
-                for i in range(self.n)
-            ])
-            return float(self.a @ x_interp)
+        Ob1 = quad(
+            lambda t: self.a @ np.array([
+                np.interp(t, self.times, self.x_traj[i]) for i in range(self.n)
+            ]),
+            0.0, self.T
+        )[0]
 
-        def integrand_u(t: float) -> float:
-            u_t = np.array([self.get_control(t, i) for i in range(self.m)])
-            return float(self.b @ u_t)
-
-        Ob1 = quad(integrand_x, 0.0, self.T)[0]
-        Ob2 = quad(integrand_u, 0.0, self.T)[0]
+        Ob2 = quad(
+            lambda t: self.b @ np.array([
+                np.interp(t, self.times, self.U[i]) for i in range(self.m)
+            ]),
+            0.0, self.T
+        )[0]
 
         self.ob_value = Ob1 + Ob2
         return self.ob_value
 
-    # -------------------------------------------------------------------------
-    # Визуализация
-    # -------------------------------------------------------------------------
-
-    def plot_controls(self):
-        if self.U is None or self.times is None:
-            raise RuntimeError("Нет данных об управлениях. Сначала вызовите solve_optimal_control().")
-
-        plt.figure(figsize=(12, 6))
-        for i in range(self.m):
-            plt.plot(self.times, self.U[i, :], label=f'u{i + 1}(t)')
-        plt.xlabel('Time')
-        plt.ylabel('Control')
-        plt.title('Optimal Controls')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
-    def plot_controls_to_bytes(self) -> bytes:
-        if self.U is None or self.times is None:
-            raise RuntimeError("Нет данных об управлениях. Сначала вызовите solve_optimal_control().")
-
-        plt.figure(figsize=(12, 6))
-        for i in range(self.m):
-            plt.plot(self.times, self.U[i, :], label=f'u{i + 1}(t)')
-        plt.xlabel('Time')
-        plt.ylabel('Control')
-        plt.title('Optimal Controls')
-        plt.legend()
-        plt.grid(True)
-
-        buffer = BytesIO()
-        plt.savefig(buffer, format='png')
-        plt.close()
-        buffer.seek(0)
-        return buffer.read()
-
-    def plot_trajectories(self):
-        if self.x_traj is None or self.times is None:
-            raise RuntimeError("Нет данных о траекториях. Сначала вызовите compute_trajectory() или solve().")
-
-        plt.figure(figsize=(12, 6))
-        for i in range(self.n):
-            plt.plot(self.times, self.x_traj[i, :], label=f'x{i + 1}(t)')
-        plt.xlabel('Time')
-        plt.ylabel('State')
-        plt.title('System Trajectories')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
-    def plot_trajectories_to_bytes(self) -> bytes:
-        if self.x_traj is None or self.times is None:
-            raise RuntimeError("Нет данных о траекториях. Сначала вызовите compute_trajectory() или solve().")
-
-        plt.figure(figsize=(12, 6))
-        for i in range(self.n):
-            plt.plot(self.times, self.x_traj[i, :], label=f'x{i + 1}(t)')
-        plt.xlabel('Time')
-        plt.ylabel('State')
-        plt.title('System Trajectories')
-        plt.legend()
-        plt.grid(True)
-
-        buffer = BytesIO()
-        plt.savefig(buffer, format='png')
-        plt.close()
-        buffer.seek(0)
-        return buffer.read()
-
-    # -------------------------------------------------------------------------
-    # Верхнеуровневое решение
-    # -------------------------------------------------------------------------
-
-    def solve(self, K: int = 50) -> Dict[str, Union[np.ndarray, float]]:
+    def solve(self, K=50):
         self.solve_optimal_control(K)
-        self.compute_trajectory()
         self.compute_objective()
         return {
-            'controls': self.U,
-            'trajectory': self.x_traj,
-            'objective': self.ob_value
+            "controls": self.U,
+            "trajectory": self.x_traj,
+            "objective": self.ob_value,
+            "phi_residual": self.Phi_residual
         }
 
 
 # -------------------------------------------------------------------------
-# Пример использования (тот же, что у тебя, но с фундаментальной матрицей)
+# БЛОК MAIN — ОСТАВЛЕН
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     solver = OptimalControlSolverNd(
         T=1.0,
         M=1.0,
         N=1.0,
-        n=1,
-        m=1,
-        x0=[0.0],
+        n=5,
+        m=2,
 
-        F_func=[["2/(t+1)"]],
-        G_func=[["t+1"]],
-        a=np.array([-1.0]),
-        b=np.array([0.0]),
+        x0=[0.0, 1.0, 0.0, -1.0, 2.0],
 
-        B=np.array([[-1.0], [1.0]], dtype=float),
-        q=np.array([0.0, 1.0], dtype=float),
+        # Неавтономная матрица F(t)
+        F_func=[
+            ["t",        "0",       "0",        "0",          "0"],
+            ["0",      "1+t",       "0",        "0",          "0"],
+            ["0",        "0",     "-t",          "0",          "0"],
+            ["0",        "0",       "0",   "2/(t+1)",          "0"],
+            ["0",        "0",       "0",        "0",     "sin(t)"]
+        ],
 
-        ft_func=["0"]
+        # Неавтономная матрица G(t)
+        G_func=[
+            ["1",     "0"],
+            ["t",     "1"],
+            ["0",   "t+1"],
+            ["1",     "1"],
+            ["t",    "-1"]
+        ],
+
+        # Коэффициенты функционала
+        a=np.array([-1.0, 0.5, 0.0, 1.0, -0.2]),
+        b=np.array([0.0, 0.0]),
+
+        # Ограничения на управление
+        B=np.array([
+            [-1.0,  0.0],
+            [ 1.0,  0.0],
+            [ 0.0, -1.0],
+            [ 0.0,  1.0]
+        ]),
+        q=np.array([0.0, 1.0, 0.0, 1.0]),
+
+        # Неавтономная свободная часть f(t)
+        ft_func=[
+            "0",
+            "t",
+            "0",
+            "1",
+            "t**2"
+        ]
     )
 
     results = solver.solve(K=50)
-    print(f"Objective value: {results['objective']}")
-    solver.plot_controls()
-    solver.plot_trajectories()
+
+    print("Objective value:", results["objective"])
+    print("Phi residuals:", results["phi_residual"])
+
+    # solver.plot_controls()
+    # solver.plot_trajectories()
