@@ -33,6 +33,9 @@ jobs:
       run: |
         python -m build  # Сборка пакета с использованием pyproject.toml
 
+    - name: Set VERBOSE environment variable
+      run: echo "VERBOSE=true" >> $GITHUB_ENV
+
     - name: Publish to PyPI
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Публикуем на пуш в main
       uses: pypa/gh-action-pypi-publish@v1.4.0  # GitHub Action для публикации на PyPI
