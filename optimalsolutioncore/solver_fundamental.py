@@ -1,15 +1,13 @@
-from io import BytesIO
-from typing import Optional, Dict, Union, List
+from typing import Optional, List
 
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.integrate import quad, solve_ivp
 from scipy.optimize import linprog
 from scipy.interpolate import CubicSpline
 import sympy as sp
 
 
-class OptimalControlSolverNd:
+class OptimalControlSolverNonAutonomic:
     """
     Решение линейной (в общем неавтономной) задачи оптимального управления:
 
@@ -282,7 +280,7 @@ class OptimalControlSolverNd:
 # БЛОК MAIN — ОСТАВЛЕН
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
-    solver = OptimalControlSolverNd(
+    solver = OptimalControlSolverNonAutonomic(
         T=1.0,
         M=1.0,
         N=1.0,
