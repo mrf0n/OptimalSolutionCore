@@ -1,6 +1,8 @@
+from io import BytesIO
 from typing import Optional, List
 
 import numpy as np
+from matplotlib import pyplot as plt
 from scipy.integrate import quad, solve_ivp
 from scipy.optimize import linprog
 from scipy.interpolate import CubicSpline
@@ -202,7 +204,7 @@ class OptimalControlSolverNonAutonomic:
 
         self.p_traj = np.zeros((n, K + 1))
         for i in range(K + 1):
-            self.p_traj[:, i] = np.linalg.solve(Phi[i].T, I[i])
+            self.p_traj[:, i] = -np.linalg.solve(Phi[i].T, I[i])
 
     # ------------------------------------------------------------------
     # оптимальное управление
@@ -214,7 +216,7 @@ class OptimalControlSolverNonAutonomic:
 
         for i, t in enumerate(self.times):
             c = (self.G(t).T @ self.p_traj[:, i] - self.b)
-            res = linprog(c, A_ub=self.B, b_ub=self.q, bounds=(None, None))
+            res = linprog(-c, A_ub=self.B, b_ub=self.q, bounds=(None, None))
             self.U[:, i] = res.x if res.success else 0.0
 
         self.compute_phi_residuals()
@@ -266,6 +268,88 @@ class OptimalControlSolverNonAutonomic:
         self.ob_value = Ob1 + Ob2
         return self.ob_value
 
+    # -------------------------------------------------------------------------
+    # ВИЗУАЛИЗАЦИЯ
+    # -------------------------------------------------------------------------
+
+    def plot_controls(self):
+        """
+        Визуализация оптимальных управлений u_i(t).
+        """
+        if self.U is None or self.times is None:
+            raise RuntimeError("Нет данных об управлениях. Сначала вызовите solve_optimal_control().")
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.m):
+            plt.plot(self.times, self.U[i, :], label=f'u{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('Control')
+        plt.title('Optimal Controls')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+    def plot_controls_to_bytes(self) -> bytes:
+        """
+        Возвращает график управлений как PNG-байты.
+        """
+        if self.U is None or self.times is None:
+            raise RuntimeError("Нет данных об управлениях. Сначала вызовите solve_optimal_control().")
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.m):
+            plt.plot(self.times, self.U[i, :], label=f'u{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('Control')
+        plt.title('Optimal Controls')
+        plt.legend()
+        plt.grid(True)
+
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        plt.close()
+        buffer.seek(0)
+        return buffer.read()
+
+    def plot_trajectories(self):
+        """
+        Визуализация траекторий состояния x_i(t).
+        """
+        if self.x_traj is None or self.times is None:
+            raise RuntimeError("Нет данных о траекториях. Сначала вызовите compute_trajectory() или solve().")
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.n):
+            plt.plot(self.times, self.x_traj[i, :], label=f'x{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('State')
+        plt.title('System Trajectories')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+    def plot_trajectories_to_bytes(self) -> bytes:
+        """
+        Возвращает график траекторий состояния как PNG-байты.
+        """
+        if self.x_traj is None or self.times is None:
+            raise RuntimeError("Нет данных о траекториях. Сначала вызовите compute_trajectory() или solve().")
+
+        plt.figure(figsize=(12, 6))
+        for i in range(self.n):
+            plt.plot(self.times, self.x_traj[i, :], label=f'x{i + 1}(t)')
+        plt.xlabel('Time')
+        plt.ylabel('State')
+        plt.title('System Trajectories')
+        plt.legend()
+        plt.grid(True)
+
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        plt.close()
+        buffer.seek(0)
+        return buffer.read()
+
     def solve(self, K=50):
         self.solve_optimal_control(K)
         self.compute_objective()
@@ -279,61 +363,61 @@ class OptimalControlSolverNonAutonomic:
 # -------------------------------------------------------------------------
 # БЛОК MAIN — ОСТАВЛЕН
 # -------------------------------------------------------------------------
-if __name__ == "__main__":
-    solver = OptimalControlSolverNonAutonomic(
-        T=1.0,
-        M=1.0,
-        N=1.0,
-        n=5,
-        m=2,
-
-        x0=[0.0, 1.0, 0.0, -1.0, 2.0],
-
-        # Неавтономная матрица F(t)
-        F_func=[
-            ["t",        "0",       "0",        "0",          "0"],
-            ["0",      "1+t",       "0",        "0",          "0"],
-            ["0",        "0",     "-t",          "0",          "0"],
-            ["0",        "0",       "0",   "2/(t+1)",          "0"],
-            ["0",        "0",       "0",        "0",     "sin(t)"]
-        ],
-
-        # Неавтономная матрица G(t)
-        G_func=[
-            ["1",     "0"],
-            ["t",     "1"],
-            ["0",   "t+1"],
-            ["1",     "1"],
-            ["t",    "-1"]
-        ],
-
-        # Коэффициенты функционала
-        a=np.array([-1.0, 0.5, 0.0, 1.0, -0.2]),
-        b=np.array([0.0, 0.0]),
-
-        # Ограничения на управление
-        B=np.array([
-            [-1.0,  0.0],
-            [ 1.0,  0.0],
-            [ 0.0, -1.0],
-            [ 0.0,  1.0]
-        ]),
-        q=np.array([0.0, 1.0, 0.0, 1.0]),
-
-        # Неавтономная свободная часть f(t)
-        ft_func=[
-            "0",
-            "t",
-            "0",
-            "1",
-            "t**2"
-        ]
-    )
-
-    results = solver.solve(K=50)
-
-    print("Objective value:", results["objective"])
-    print("Phi residuals:", results["phi_residual"])
-
-    # solver.plot_controls()
-    # solver.plot_trajectories()
+# if __name__ == "__main__":
+#     solver = OptimalControlSolverNonAutonomic(
+#         T=1.0,
+#         M=1.0,
+#         N=1.0,
+#         n=5,
+#         m=2,
+#
+#         x0=[0.0, 1.0, 0.0, -1.0, 2.0],
+#
+#         # Неавтономная матрица F(t)
+#         F_func=[
+#             ["t",        "0",       "0",        "0",          "0"],
+#             ["0",      "1+t",       "0",        "0",          "0"],
+#             ["0",        "0",     "-t",          "0",          "0"],
+#             ["0",        "0",       "0",   "2/(t+1)",          "0"],
+#             ["0",        "0",       "0",        "0",     "sin(t)"]
+#         ],
+#
+#         # Неавтономная матрица G(t)
+#         G_func=[
+#             ["1",     "0"],
+#             ["t",     "1"],
+#             ["0",   "t+1"],
+#             ["1",     "1"],
+#             ["t",    "-1"]
+#         ],
+#
+#         # Коэффициенты функционала
+#         a=np.array([-1.0, 0.5, 0.0, 1.0, -0.2]),
+#         b=np.array([0.0, 0.0]),
+#
+#         # Ограничения на управление
+#         B=np.array([
+#             [-1.0,  0.0],
+#             [ 1.0,  0.0],
+#             [ 0.0, -1.0],
+#             [ 0.0,  1.0]
+#         ]),
+#         q=np.array([0.0, 1.0, 0.0, 1.0]),
+#
+#         # Неавтономная свободная часть f(t)
+#         ft_func=[
+#             "0",
+#             "t",
+#             "0",
+#             "1",
+#             "t**2"
+#         ]
+#     )
+#
+#     results = solver.solve(K=50)
+#
+#     print("Objective value:", results["objective"])
+#     print("Phi residuals:", results["phi_residual"])
+#
+#     solver.plot_controls()
+#     solver.plot_trajectories()
