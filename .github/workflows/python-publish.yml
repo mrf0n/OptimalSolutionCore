@@ -40,5 +40,5 @@ jobs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Публикуем на пуш в main
       uses: pypa/gh-action-pypi-publish@v1.4.0  # GitHub Action для публикации на PyPI
       with:
-        user: ${{ secrets.PYPI_USERNAME }}  # Имя пользователя PyPI (из GitHub Secrets)
-        password: ${{ secrets.PYPI_PASSWORD }}  # Пароль на PyPI (из GitHub Secrets)
+        user: __token__  # Используем __token__ для аутентификации через API
+        password: ${{ secrets.PYPI_API_TOKEN }}  # Токен PyPI из GitHub Secrets
