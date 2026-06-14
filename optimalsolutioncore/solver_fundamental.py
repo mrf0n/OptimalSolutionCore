@@ -31,8 +31,8 @@ class OptimalControlSolverNonAutonomic:
                  x0: Optional[np.ndarray] = None,
                  F_func: Optional[List[List[str]]] = None,
                  G_func: Optional[List[List[str]]] = None,
-                 a: Optional[np.ndarray] = None,
-                 b: Optional[np.ndarray] = None,
+                 a: Optional[List[str]] = None,
+                 b: Optional[List[str]] = None,
                  B: Optional[np.ndarray] = None,
                  q: Optional[np.ndarray] = None,
                  ft_func: Optional[List[str]] = None):
@@ -44,8 +44,30 @@ class OptimalControlSolverNonAutonomic:
         self.m = int(m)
 
         self.x0 = np.array([5.0, 12.0], dtype=float) if x0 is None else np.array(x0, dtype=float)
-        self.a = np.array([-1.0, 0.0], dtype=float) if a is None else np.array(a, dtype=float)
-        self.b = np.array([0.0, 5.0], dtype=float) if b is None else np.array(b, dtype=float)
+
+        # a(t)
+        if a is None:
+            def default_a(t):
+                at = np.zeros(self.n)
+                if self.n > 0:
+                    at[0] = -1.0
+                return at
+            self.a = default_a
+        else:
+            self.a = self._create_vector_func(a, self.n)
+
+        # b(t)
+        if b is None:
+            def default_b(t):
+                bt = np.zeros(self.m)
+                if self.m > 1:
+                    bt[1] = 5.0
+                elif self.m == 1:
+                    bt[0] = 5.0
+                return bt
+            self.b = default_b
+        else:
+            self.b = self._create_vector_func(b, self.m)
 
         self.B = np.array(
             [[-1, 0],
@@ -116,6 +138,18 @@ class OptimalControlSolverNonAutonomic:
             return v
 
         return ft
+
+    def _create_vector_func(self, expressions, size):
+        t = sp.symbols('t')
+        funcs = [sp.lambdify(t, sp.sympify(e), 'numpy') for e in expressions]
+
+        def vector_func(tv):
+            v = np.zeros(size)
+            for i in range(min(size, len(funcs))):
+                v[i] = funcs[i](tv)
+            return v
+
+        return vector_func
 
     def _create_matrix_func(self, expressions):
         t = sp.symbols('t')
@@ -195,7 +229,7 @@ class OptimalControlSolverNonAutonomic:
         t = self.times
         n = self.n
 
-        A = np.array([Phi[i].T @ self.a for i in range(K + 1)])
+        A = np.array([Phi[i].T @ self.a(t[i]) for i in range(K + 1)])
 
         I = np.zeros_like(A)
         for i in range(K - 1, -1, -1):
@@ -215,7 +249,7 @@ class OptimalControlSolverNonAutonomic:
         self.U = np.zeros((self.m, K + 1))
 
         for i, t in enumerate(self.times):
-            c = (self.G(t).T @ self.p_traj[:, i] - self.b)
+            c = (self.G(t).T @ self.p_traj[:, i] - self.b(t))
             res = linprog(-c, A_ub=self.B, b_ub=self.q, bounds=(None, None))
             self.U[:, i] = res.x if res.success else 0.0
 
@@ -252,14 +286,14 @@ class OptimalControlSolverNonAutonomic:
         self.compute_trajectory()
 
         Ob1 = quad(
-            lambda t: self.a @ np.array([
+            lambda t: self.a(t) @ np.array([
                 np.interp(t, self.times, self.x_traj[i]) for i in range(self.n)
             ]),
             0.0, self.T
         )[0]
 
         Ob2 = quad(
-            lambda t: self.b @ np.array([
+            lambda t: self.b(t) @ np.array([
                 np.interp(t, self.times, self.U[i]) for i in range(self.m)
             ]),
             0.0, self.T
@@ -392,8 +426,8 @@ class OptimalControlSolverNonAutonomic:
 #         ],
 #
 #         # Коэффициенты функционала
-#         a=np.array([-1.0, 0.5, 0.0, 1.0, -0.2]),
-#         b=np.array([0.0, 0.0]),
+#         a=["-1.0", "0.5", "0.0", "1.0", "-0.2"],
+#         b=["0.0", "0.0"],
 #
 #         # Ограничения на управление
 #         B=np.array([
